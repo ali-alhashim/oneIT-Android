@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">oneIT</string>
+    <string name="login">Login</string>
+    <string name="https_server_address_com">https://server-address.com</string>
+    <!-- TODO: Remove or change this placeholder text -->
+    <string name="hello_blank_fragment">Hello blank fragment</string>
+</resources>
