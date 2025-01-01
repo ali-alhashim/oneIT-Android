@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.alhashim.oneit"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.alhashim.oneit"
@@ -47,6 +47,7 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.androidx.espresso.core)
     implementation(libs.play.services.location)
+    implementation(libs.androidx.biometric)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

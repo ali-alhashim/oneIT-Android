@@ -3,7 +3,6 @@ package com.alhashim.oneit
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.fragment.app.Fragment
 import android.view.LayoutInflater
@@ -12,21 +11,23 @@ import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
-import okhttp3.MediaType.Companion.toMediaType
 import androidx.core.app.ActivityCompat
-import com.google.android.gms.location.LocationServices
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.OkHttpClient
-import okhttp3.Response
-import okio.IOException
-import org.json.JSONException
-import org.json.JSONObject
-import android.location.Location
 import androidx.navigation.fragment.findNavController
 import com.google.android.gms.location.FusedLocationProviderClient
+import com.google.android.gms.location.LocationServices
+import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
+import android.location.Location
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okio.IOException
 
 class DashboardFragment : Fragment() {
     private lateinit var cookieJar: MyCookieJar
@@ -69,35 +70,111 @@ class DashboardFragment : Fragment() {
 
         buttonCheckIn.setOnClickListener {
             checkLocationPermissionAndProceed {
-                performCheckIn(serverUrl, badgeNumber)
+                showBiometricPrompt {
+                    performCheckIn(serverUrl, badgeNumber)
+                }
             }
         }
-
 
         buttonCheckOut.setOnClickListener {
             checkLocationPermissionAndProceed {
-                performCheckOut(serverUrl, badgeNumber)
+                showBiometricPrompt {
+                    performCheckOut(serverUrl, badgeNumber)
+                }
             }
         }
 
-        buttonTimesheet.setOnClickListener{
+        buttonLogout.setOnClickListener {
+            logoutRequest(badgeNumber.toString(), serverUrl.toString())
+        }
+
+        buttonTimesheet.setOnClickListener {
             findNavController().navigate(R.id.action_dashboardFragment_to_timesheetFragment)
         }
+
+        if (!isBiometricAvailable()) {
+            buttonCheckIn.isEnabled = false
+            buttonCheckOut.isEnabled = false
+        }
+    }
+
+    private fun logoutRequest(badgeNumber: String, serverUrl: String) {
+        val json = JSONObject()
+        json.put("badgeNumber", badgeNumber)
+        val requestBody = json.toString().toRequestBody("application/json".toMediaType())
+        val request = Request.Builder()
+            .url("${serverUrl}/api/logout")
+            .post(requestBody)
+            .build()
+
+        val client = OkHttpClient.Builder()  // Not `OkHttpClient().Builder()`
+            .cookieJar(cookieJar)  // Pass your CookieJar instance here
+            .build()
+
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: java.io.IOException) {
+
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                if (response.isSuccessful) {
+                    val responseBody = response.body?.string()
+                    val jsonResponse = JSONObject(responseBody ?: "{}")
+
+                    val message = jsonResponse.optString("message", "")
+
+                    Toast.makeText(requireContext(), "Success: $message", Toast.LENGTH_SHORT).show()
+
+                } else {
+                    Toast.makeText(requireContext(), "Error: ", Toast.LENGTH_SHORT).show()
+                    }
+
+            }
+        })
+    }
+
+    private fun showBiometricPrompt(onSuccess: () -> Unit) {
+        val executor = ContextCompat.getMainExecutor(requireContext())
+        val biometricPrompt = BiometricPrompt(this, executor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    requireActivity().runOnUiThread {
+                        Toast.makeText(requireContext(), "Authentication error: $errString", Toast.LENGTH_SHORT).show()
+                    }
+                }
+
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    requireActivity().runOnUiThread {
+                        Toast.makeText(requireContext(), "Authentication successful!", Toast.LENGTH_SHORT).show()
+                    }
+                    onSuccess()
+                }
+
+                override fun onAuthenticationFailed() {
+                    requireActivity().runOnUiThread {
+                        Toast.makeText(requireContext(), "Authentication failed", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            })
+
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Biometric Authentication")
+            .setSubtitle("Use your fingerprint to proceed")
+            .setNegativeButtonText("Cancel")
+            .build()
+
+        biometricPrompt.authenticate(promptInfo)
+    }
+
+    private fun isBiometricAvailable(): Boolean {
+        val biometricManager = BiometricManager.from(requireContext())
+        return biometricManager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
     }
 
     private fun checkLocationPermissionAndProceed(onPermissionGranted: () -> Unit) {
         when {
-            hasLocationPermission() -> {
-                onPermissionGranted()
-            }
-            shouldShowRequestPermissionRationale(Manifest.permission.ACCESS_FINE_LOCATION) -> {
-                showLocationPermissionRationale {
-                    requestLocationPermission()
-                }
-            }
-            else -> {
-                requestLocationPermission()
-            }
+            hasLocationPermission() -> onPermissionGranted()
+            else -> requestLocationPermission()
         }
     }
 
@@ -110,255 +187,103 @@ class DashboardFragment : Fragment() {
 
     private fun requestLocationPermission() {
         requestPermissions(
-            arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            ),
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
             LOCATION_PERMISSION_REQUEST_CODE
         )
     }
 
-    private fun showLocationPermissionRationale(onProceed: () -> Unit) {
-        Toast.makeText(
-            requireContext(),
-            "Location permission is required for check-in",
-            Toast.LENGTH_LONG
-        ).show()
-        onProceed()
-    }
-
     private fun performCheckIn(serverUrl: String?, badgeNumber: String?) {
-        println("Check-In Request.....")
-
         if (ActivityCompat.checkSelfPermission(
                 requireContext(),
                 Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(
+                requireContext(),
+                Manifest.permission.ACCESS_COARSE_LOCATION
             ) != PackageManager.PERMISSION_GRANTED
         ) {
+            // TODO: Consider calling
+            //    ActivityCompat#requestPermissions
+            // here to request the missing permissions, and then overriding
+            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            //                                          int[] grantResults)
+            // to handle the case where the user grants the permission. See the documentation
+            // for ActivityCompat#requestPermissions for more details.
             return
         }
-
-        val mobileModel = Build.MODEL
-        val mobileOS = "Android ${Build.VERSION.RELEASE}"
-
-        fusedLocationClient.lastLocation
-            .addOnSuccessListener { location ->
-                if (location != null) {
-                    sendCheckInRequest(location, serverUrl, badgeNumber, mobileModel, mobileOS)
-                } else {
-                    Toast.makeText(
-                        requireContext(),
-                        "Unable to get location. Please check your GPS settings.",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
-            .addOnFailureListener { e ->
-                Toast.makeText(
-                    requireContext(),
-                    "Location error: ${e.message}",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
-    }
-
-    private fun sendCheckInRequest(
-        location: Location,
-        serverUrl: String?,
-        badgeNumber: String?,
-        mobileModel: String,
-        mobileOS: String
-    ) {
-        println("latitude: ${location.latitude} & longitude: ${location.longitude} , mobileModel: $mobileModel , mobileOS: $mobileOS")
-
-        val json = JSONObject().apply {
-            put("latitude", location.latitude)
-            put("longitude", location.longitude)
-            put("mobileModel", mobileModel)
-            put("mobileOS", mobileOS)
-            put("badgeNumber", badgeNumber)
-        }
-
-        println("Http post request to ${serverUrl}/api/checkIn")
-
-        val requestBody = json.toString().toRequestBody("application/json".toMediaType())
-        val request = Request.Builder()
-            .url("${serverUrl}/api/checkIn")
-            .post(requestBody)
-            .build()
-
-        val client = OkHttpClient.Builder()
-            .cookieJar(cookieJar)
-            .build()
-
-        client.newCall(request).enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                requireActivity().runOnUiThread {
-                    Toast.makeText(
-                        requireContext(),
-                        "Check-in failed: ${e.message}",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                val responseBody = response.body?.string()
-                requireActivity().runOnUiThread {
-                    if (response.isSuccessful && responseBody != null) {
-                        try {
-                            val jsonResponse = JSONObject(responseBody)
-                            val message = jsonResponse.optString("message", "")
-                            Toast.makeText(
-                                requireContext(),
-                                message,
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        } catch (e: JSONException) {
-                            Toast.makeText(
-                                requireContext(),
-                                "Error parsing response",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    } else {
-                        Toast.makeText(
-                            requireContext(),
-                            "Check-in failed: ${response.message}",
-                            Toast.LENGTH_SHORT
-                        ).show()
-                    }
-                }
-            }
-        })
-    }
-
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        when (requestCode) {
-            LOCATION_PERMISSION_REQUEST_CODE -> {
-                if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                    // Permission granted, proceed with check-in
-                    val sharedPreferences = requireActivity().getSharedPreferences("oneIT", Context.MODE_PRIVATE)
-                    val serverUrl = sharedPreferences.getString("serverUrl", "")
-                    val badgeNumber = sharedPreferences.getString("badgeNumber", "")
-                    performCheckIn(serverUrl, badgeNumber)
-                } else {
-                    Toast.makeText(
-                        requireContext(),
-                        "Location permission is required for check-in",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+        fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+            location?.let {
+                sendLocationRequest(it, serverUrl, badgeNumber, "checkIn")
             }
         }
     }
 
-
-    ////----checkout
     private fun performCheckOut(serverUrl: String?, badgeNumber: String?) {
-        println("Check-Out Request.....")
-
         if (ActivityCompat.checkSelfPermission(
                 requireContext(),
                 Manifest.permission.ACCESS_FINE_LOCATION
+            ) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(
+                requireContext(),
+                Manifest.permission.ACCESS_COARSE_LOCATION
             ) != PackageManager.PERMISSION_GRANTED
         ) {
+            // TODO: Consider calling
+            //    ActivityCompat#requestPermissions
+            // here to request the missing permissions, and then overriding
+            //   public void onRequestPermissionsResult(int requestCode, String[] permissions,
+            //                                          int[] grantResults)
+            // to handle the case where the user grants the permission. See the documentation
+            // for ActivityCompat#requestPermissions for more details.
             return
         }
-
-        val mobileModel = Build.MODEL
-        val mobileOS = "Android ${Build.VERSION.RELEASE}"
-
-        fusedLocationClient.lastLocation
-            .addOnSuccessListener { location ->
-                if (location != null) {
-                    sendCheckOutRequest(location, serverUrl, badgeNumber, mobileModel, mobileOS)
-                } else {
-                    Toast.makeText(
-                        requireContext(),
-                        "Unable to get location. Please check your GPS settings.",
-                        Toast.LENGTH_SHORT
-                    ).show()
-                }
+        fusedLocationClient.lastLocation.addOnSuccessListener { location ->
+            location?.let {
+                sendLocationRequest(it, serverUrl, badgeNumber, "checkOut")
             }
-            .addOnFailureListener { e ->
-                Toast.makeText(
-                    requireContext(),
-                    "Location error: ${e.message}",
-                    Toast.LENGTH_SHORT
-                ).show()
-            }
+        }
     }
 
-    private fun sendCheckOutRequest(
-        location: Location,
-        serverUrl: String?,
-        badgeNumber: String?,
-        mobileModel: String,
-        mobileOS: String
-    ) {
-        println("latitude: ${location.latitude} & longitude: ${location.longitude} , mobileModel: $mobileModel , mobileOS: $mobileOS")
-
+    private fun sendLocationRequest(location: Location, serverUrl: String?, badgeNumber: String?, endpoint: String) {
         val json = JSONObject().apply {
             put("latitude", location.latitude)
             put("longitude", location.longitude)
-            put("mobileModel", mobileModel)
-            put("mobileOS", mobileOS)
             put("badgeNumber", badgeNumber)
         }
 
-        println("Http post request to ${serverUrl}/api/checkOut")
-
         val requestBody = json.toString().toRequestBody("application/json".toMediaType())
         val request = Request.Builder()
-            .url("${serverUrl}/api/checkOut")
+            .url("${serverUrl}/api/$endpoint")
             .post(requestBody)
             .build()
 
-        val client = OkHttpClient.Builder()
-            .cookieJar(cookieJar)
-            .build()
-
-        client.newCall(request).enqueue(object : Callback {
+        OkHttpClient.Builder().cookieJar(cookieJar).build().newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 requireActivity().runOnUiThread {
-                    Toast.makeText(
-                        requireContext(),
-                        "Check-out failed: ${e.message}",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(requireContext(), "Failed: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
 
             override fun onResponse(call: Call, response: Response) {
-                val responseBody = response.body?.string()
                 requireActivity().runOnUiThread {
-                    if (response.isSuccessful && responseBody != null) {
-                        try {
-                            val jsonResponse = JSONObject(responseBody)
-                            val message = jsonResponse.optString("message", "")
-                            Toast.makeText(
-                                requireContext(),
-                                message,
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        } catch (e: JSONException) {
-                            Toast.makeText(
-                                requireContext(),
-                                "Error parsing response",
-                                Toast.LENGTH_SHORT
-                            ).show()
+                    CoroutineScope(Dispatchers.IO).launch {
+                        response.use {
+                            val responseBody = it.body?.string() ?: "No response from server"
+                            val jsonResponse = try {
+                                JSONObject(responseBody)
+                            } catch (e: Exception) {
+                                JSONObject().put("message", "Invalid response format")
+                            }
+
+                            val message = jsonResponse.optString("message", "Unknown error occurred")
+
+                            // Switch to the main thread to update the UI
+                            withContext(Dispatchers.Main) {
+                                if (response.isSuccessful) {
+                                    Toast.makeText(requireContext(), "Success: $message", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    Toast.makeText(requireContext(), "Error: $message", Toast.LENGTH_SHORT).show()
+                                }
+                            }
                         }
-                    } else {
-                        Toast.makeText(
-                            requireContext(),
-                            "Check-out failed: ${response.message}",
-                            Toast.LENGTH_SHORT
-                        ).show()
                     }
                 }
             }
